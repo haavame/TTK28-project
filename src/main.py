@@ -2,9 +2,9 @@ from random import seed
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-from math import sqrt
 from plot import DataPlotter
 from dataHandler import DataHandler
+from network import FCNN, train
 
 def main():
 	datahandler = DataHandler("../data/well_data.csv", index_col=0, seed=12345)
@@ -29,6 +29,23 @@ def main():
 	scatter.fill_scatter(indices=datahandler.get_test_set().index, values=datahandler.get_test_set()['QTOT'], color='red', label='Test')
 
 	scatter.show()
+
+	input_cols = ['CHK', 'PWH', 'PDC', 'TWH', 'FGAS', 'FOIL']
+	output_cols = ['QTOT']
+
+	datahandler.set_input_cols(input_cols)
+	datahandler.set_output_cols(output_cols)
+
+	train_loader = datahandler.generate_dataloader(set='train')
+	val_loader = datahandler.generate_dataloader(set='val')
+
+	layers = [len(input_cols), 50, 50, len(output_cols)]
+	net = FCNN(layers)
+
+	n_epochs = 100
+	lr = 0.001
+	l2_reg = 0.001  # 10
+	net = train(net, train_loader, val_loader, n_epochs, lr, l2_reg)
 
 if __name__ == "__main__":
 	main()

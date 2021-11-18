@@ -8,7 +8,6 @@ from network import Trainer
 
 def main():
 	datahandler = DataHandler("../data/well_data.csv", index_col=0, seed=12345, test_indices=(2000, 2500), validation_frac=0.1)
-	# datahandler.generate_data_sets(test_indices=(2000, 2500), validation_frac=0.1)
 
 	#draw_plots(datahandler)
 
@@ -18,23 +17,29 @@ def main():
 	datahandler.set_input_cols(input_cols)
 	datahandler.set_output_cols(output_cols)
 
-	layers = [len(input_cols), 50, 50, len(output_cols)]
+	layers = [len(input_cols), 100, 100, 100, len(output_cols)]
 
 	n_epochs = 100
 	n_steps = 5
 	lr = 0.001
 	l2_reg = 0.001  # 10
 	l1_reg = 0.001  # 10
-	patience = 10
-	retrain = False
+	patience = 5
+	retrain = True
 
-	trainer = Trainer(layers=layers, data=datahandler, early_stopping=True)
+	trainer = Trainer(layers=layers, data=datahandler, l1=False, l2=False, early_stopping=True, dropout=0.0)
 
-	trainer.train(n_epochs=n_steps, lr=lr, l2_reg=l2_reg, l1_reg=l1_reg, patience=patience, retrain=retrain)
+	trainer.train_network(n_epochs=n_steps, lr=lr, l2_reg=l2_reg, l1_reg=l1_reg, patience=patience, retrain=retrain)
 
-	mse_value, mae_value, mape_value = trainer.evaluate(mode='test')
+	x_test, y_test = datahandler.generate_tensor(set='test')
+
+	mse_value, mae_value, mape_value = trainer.evaluate(input=x_test, value=y_test)
 
 	print_evaluation(mse_value, mae_value, mape_value)
+
+	y_pred = trainer.predict(input=x_test)
+
+	plot_comparison(y_test, y_pred)
 
 
 def draw_plots(datahandler: DataHandler):
@@ -57,12 +62,23 @@ def draw_plots(datahandler: DataHandler):
 
 	scatter.show()
 
+
+def plot_comparison(value, prediction):
+	plotter = DataPlotter()
+
+	plotter.fill_plot(data=value, label='missing data')
+	plotter.fill_plot(data=prediction, label='predicted data')
+
+	plotter.show()
+
+
 def print_evaluation(mse_value :float, mae_value :float, mape_value :float):
 	print(f'MSE: {mse_value}')
 
 	print(f'MAE: {mae_value}')
 
-	print(f'MAPE: {mape_value} %')
+	print(f'MAPE: {mape_value}%')
+
 
 if __name__ == "__main__":
 	main()

@@ -1,68 +1,228 @@
 import torch
 from torch.utils.data import DataLoader
+from dataHandler import DataHandler
 from math import sqrt
 
 
 class FCNN(torch.nn.Module):
-	def __init__(self, layers :list):
-		super().__init__()
+    def __init__(self, layers :list):
+        super().__init__()
 
-		self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-		assert len(layers) >= 2 # "At least two layers are required (incl. input and output layer)"
+        assert len(layers) >= 2 # "At least two layers are required (incl. input and output layer)"
 
-		self.layers = layers
+        self.layers = layers
 
-		linear_layers = []
+        #linear_layers = []
 
-		for i in range(len(self.layers) -1):
-			n_in = self.layers[i]
-			n_out = self.layers[i+1]
-			layer = torch.nn.Linear(n_in, n_out)
+        # for i in range(len(self.layers) -1):
+        #     n_in = self.layers[i]
+        #     n_out = self.layers[i+1]
+        #     layer = torch.nn.Linear(n_in, n_out)
+
+        #     # Initialize weights and biases
+        #     a = 1 if i == 0 else 2
+        #     layer.weight.data = torch.randn((n_out, n_in)) * sqrt(a/n_in) # HE initialization for i != 0.
+        #     layer.bias.data = torch.zeros(n_out)
+
+        #     # Add to list
+        #     linear_layers.append(layer)
+
+        # # Modules/layers must be registered to enable saving of model
+        # self.linear_layers = torch.nn.ModuleList(linear_layers)
+
+        # Initialize with random weights and zero biases
+        self._randomize_weights()
+
+        # Non-linearity (e.g. ReLU, ELU, or SELU)
+        self.act = torch.nn.ReLU(inplace=False)
+
+    def _randomize_weights(self):
+        linear_layers = []
+
+        for i in range(len(self.layers) -1):
+            n_in = self.layers[i]
+            n_out = self.layers[i+1]
+            layer = torch.nn.Linear(n_in, n_out)
 
             # Initialize weights and biases
-			a = 1 if i == 0 else 2
-			layer.weight.data = torch.randn((n_out, n_in)) * sqrt(a/n_in) # HE initialization for i != 0.
-			layer.bias.data = torch.zeros(n_out)
+            a = 1 if i == 0 else 2
+            layer.weight.data = torch.randn((n_out, n_in)) * sqrt(a/n_in) # HE initialization for i != 0.
+            layer.bias.data = torch.zeros(n_out)
 
-			# Add to list
-			linear_layers.append(layer)
+            # Add to list
+            linear_layers.append(layer)
 
-		# Modules/layers must be registered to enable saving of model
-		self.linear_layers = torch.nn.ModuleList(linear_layers)
+        # Modules/layers must be registered to enable saving of model
+        self.linear_layers = torch.nn.ModuleList(linear_layers)
 
-		# Non-linearity (e.g. ReLU, ELU, or SELU)
-		self.act = torch.nn.ReLU(inplace=False)
+    def forward(self, input :torch.Tensor) -> torch.nn.Module:
+        x = input
+        for l in self.linear_layers[:-1]:
+            x = l(x)
+            x = self.act(x)
 
-	def forward(self, input :torch.Tensor):
-		x = input
-		for l in self.linear_layers[:-1]:
-			x = l(x)
-			x = self.act(x)
+        output_layer = self.linear_layers[-1]
+        return output_layer(x)
 
-		output_layer = self.linear_layers[-1]
-		return output_layer(x)
-
-	def get_num_parameters(self):
-		return sum(p.numel() for p in self.parameters())
+    def get_num_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters())
     
-	def save(self, path: str):
-		torch.save({
-			'model_state_dict': self.state_dict(),
-		}, path)
+    def save(self, path: str):
+        torch.save({
+            'model_state_dict': self.state_dict(),
+        }, path)
 
-	def load(self, path: str):
-		checkpoint = torch.load(path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-		self.load_state_dict(checkpoint['model_state_dict'])
+    def load(self, path: str):
+        checkpoint = torch.load(path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        self.load_state_dict(checkpoint['model_state_dict'])
+
+
+class Trainer(FCNN):
+    def __init__(self, layers :list, data :DataHandler, l1 :bool=False, l2 :bool=False, early_stopping :bool=False, dropout :bool=False):
+        super().__init__(layers)
+
+        self.l1 = l1
+        self.l2 = l2
+        self.early_stopping = early_stopping
+        self.dropout = dropout
+
+        # Generate_loaders
+        self.datahandler = data
+
+        self.train_loader = self.datahandler.generate_dataloader(set='train')
+        self.val_loader = self.datahandler.generate_dataloader(set='val')
+        self.train_val_loader = self.datahandler.generate_dataloader(set='train_val')
+
+    def train(self, n_epochs :int, lr :float=0.001, l1_reg :float=None, l2_reg :float=None, patience :int=None, retrain :bool=False) ->None:
+        self._verify_inputs(l1_reg=l1_reg, l2_reg=l2_reg, patience=patience)
+
+        # Define loss and optimizer
+        criterion = torch.nn.MSELoss(reduction='mean')
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
+        if self.early_stopping:
+            j = i = 0
+            optimal_mse = float('inf')
+            best_state = self.state_dict()
+            optimal_iterations = i
+
+            while j < patience:
+                self._training_loop(n_epochs=n_epochs, l1_reg=l1_reg, l2_reg=l2_reg, loader=self.train_loader, criterion=criterion, optimizer=optimizer)
+            
+                i += n_epochs
+
+                mse_val = self._calculate_mse(self.val_loader)
+
+                if mse_val < optimal_mse:
+                    j = 0
+                    best_state = self.state_dict()
+                    optimal_iterations = i
+                    optimal_mse = mse_val
+                
+                else:
+                    j += 1
+                
+            if retrain:
+                self._randomize_weights()
+
+                self._training_loop(n_epochs=optimal_iterations, l1_reg=l1_reg, l2_reg=l2_reg, loader=self.train_val_loader, criterion=criterion, optimizer=optimizer)
+
+            else:
+                self.load_state_dict(best_state)    
+              
+        else:
+            self._training_loop(n_epochs=n_epochs, l1_reg=l1_reg, l2_reg=l2_reg, loader=self.train_loader, criterion=criterion, optimizer=optimizer, validate=True)
+
+
+    def _verify_inputs(self, l1_reg :float, l2_reg :float, patience :int) -> None:
+        if self.l1 and (l1_reg is None):
+            raise TypeError(f"Cannot perform l1 regularization with l1_reg {l1_reg}")
+
+        if self.l2 and (l2_reg is None):
+            raise TypeError(f"Cannot perform l1 regularization with l2_reg {l2_reg}")
+
+        if self.early_stopping and (patience is None):
+            raise TypeError(f"Cannot perform early stopping with patience {patience}")
+        
+        if self.dropout:
+            raise NotImplementedError("Dropout not implemented")
+
+
+    def _calculate_mse(self, loader :DataLoader):
+        mse_val = 0
+
+        for inputs, labels in loader:
+            mse_val += torch.sum(torch.pow(labels - self(inputs), 2)).item()
+
+        mse_val /= len(loader.dataset)
+
+        return mse_val
+
+
+    def _training_loop(self, n_epochs :int, l1_reg :float, l2_reg :float, loader :DataLoader, criterion, optimizer, validate :bool=False):
+        for epoch in range(n_epochs):
+            for inputs, labels in loader:
+                # Zero the parameter gradients (from last iteration)
+                optimizer.zero_grad()
+
+                # Forward propagation
+                outputs = self(inputs)
+                
+                # Compute cost function
+                batch_mse = criterion(outputs, labels)
+                
+                reg_loss = 0
+                
+                if self.l1:
+                    l1_loss = 0
+                    for param in self.parameters():
+                        l1_loss += param.abs().sum()
+                    
+                    reg_loss += l1_reg * l1_loss
+
+                if self.l2:
+                    l2_loss = 0
+                    for param in self.parameters():
+                        l2_loss += param.pow(2).sum()
+                    
+                    reg_loss += l2_reg * l2_loss
+
+                cost = batch_mse + reg_loss
+
+                # Backward propagation to compute gradient
+                cost.backward()
+                
+                # Update parameters using gradient
+                optimizer.step()
+
+            if validate:
+                mse_val = self._calculate_mse(self.val_loader)    
+                print(f'Epoch: {epoch + 1}: Val MSE: {mse_val}')
+
+
+    def evaluate(self, mode :str='test') -> tuple:
+        x, y = self.datahandler.generate_tensor(set=mode)
+
+        pred = self(x)
+
+        mse_test = torch.mean(torch.pow(pred - y, 2))
+
+        mae_test = torch.mean(torch.abs(pred - y))
+
+        mape_test = 100*torch.mean(torch.abs(torch.div(pred - y, y)))
+
+        return mse_test.item(), mae_test.item(), mape_test.item()
 
 
 def train(
         net: torch.nn.Module,
         train_loader: DataLoader,
-        val_loader: DataLoader,
         n_epochs: int,
         lr: float,
         l2_reg: float,
+        val_loader: DataLoader=None,
 ) -> torch.nn.Module:
     """
     Train model using mini-batch SGD
@@ -104,11 +264,13 @@ def train(
             # Update parameters using gradient
             optimizer.step()
         
-        # Evaluate model on validation data
-        mse_val = 0
-        for inputs, labels in val_loader:
-            mse_val += torch.sum(torch.pow(labels - net(inputs), 2)).item()
-        mse_val /= len(val_loader.dataset)
-        print(f'Epoch: {epoch + 1}: Val MSE: {mse_val}')
+
+        # Evaluate model on validation data if exists
+        if val_loader is not None:
+            mse_val = 0
+            for inputs, labels in val_loader:
+                mse_val += torch.sum(torch.pow(labels - net(inputs), 2)).item()
+            mse_val /= len(val_loader.dataset)
+            print(f'Epoch: {epoch + 1}: Val MSE: {mse_val}')
         
     return net

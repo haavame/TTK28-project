@@ -5,8 +5,16 @@ from math import sqrt
 
 
 class FCNN(torch.nn.Module):
-    def __init__(self, layers :list):
+    def __init__(self, layers :list, dropout :float):
         super().__init__()
+
+        if dropout:
+            assert dropout > 0 # Ensure positive dropout value
+            self.enable_dropout = True
+            self.dropout = torch.nn.Dropout(dropout)
+
+        else:
+            self.enable_dropout = False
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -14,31 +22,13 @@ class FCNN(torch.nn.Module):
 
         self.layers = layers
 
-        #linear_layers = []
-
-        # for i in range(len(self.layers) -1):
-        #     n_in = self.layers[i]
-        #     n_out = self.layers[i+1]
-        #     layer = torch.nn.Linear(n_in, n_out)
-
-        #     # Initialize weights and biases
-        #     a = 1 if i == 0 else 2
-        #     layer.weight.data = torch.randn((n_out, n_in)) * sqrt(a/n_in) # HE initialization for i != 0.
-        #     layer.bias.data = torch.zeros(n_out)
-
-        #     # Add to list
-        #     linear_layers.append(layer)
-
-        # # Modules/layers must be registered to enable saving of model
-        # self.linear_layers = torch.nn.ModuleList(linear_layers)
-
         # Initialize with random weights and zero biases
-        self._randomize_weights()
+        self._initialize_weights()
 
         # Non-linearity (e.g. ReLU, ELU, or SELU)
         self.act = torch.nn.ReLU(inplace=False)
 
-    def _randomize_weights(self):
+    def _initialize_weights(self):
         linear_layers = []
 
         for i in range(len(self.layers) -1):
@@ -57,10 +47,32 @@ class FCNN(torch.nn.Module):
         # Modules/layers must be registered to enable saving of model
         self.linear_layers = torch.nn.ModuleList(linear_layers)
 
+    def _randomize_weights(self):
+        for i in range(len(self.layers) -1):
+            n_in = self.layers[i]
+            n_out = self.layers[i+1]
+            layer = self.linear_layers[i]
+
+            # Initialize weights and biases
+            a = 1 if i == 0 else 2
+            layer.weight.data = torch.randn((n_out, n_in)) * sqrt(a/n_in) # HE initialization for i != 0.
+            layer.bias.data = torch.zeros(n_out)
+
+        # for i in range(len(self.linear_layers)):
+        #     l = self.linear_layers[i]
+
+        #     a = 1 if i == 0 else 2
+        #     l.weight.data = torch.randn((l.out_features, l.in_features)) * sqrt(a/l.in_features)
+        #     l.bias.data = torch.zeros(l.out_parameters)
+
     def forward(self, input :torch.Tensor) -> torch.nn.Module:
         x = input
         for l in self.linear_layers[:-1]:
             x = l(x)
+            
+            if self.enable_dropout:
+                x = self.dropout(x)
+
             x = self.act(x)
 
         output_layer = self.linear_layers[-1]
@@ -80,13 +92,13 @@ class FCNN(torch.nn.Module):
 
 
 class Trainer(FCNN):
-    def __init__(self, layers :list, data :DataHandler, l1 :bool=False, l2 :bool=False, early_stopping :bool=False, dropout :bool=False):
-        super().__init__(layers)
+    def __init__(self, layers :list, data :DataHandler, l1 :bool=False, l2 :bool=False, early_stopping :bool=False, dropout :float=0):
+        super().__init__(layers, dropout)
 
         self.l1 = l1
         self.l2 = l2
         self.early_stopping = early_stopping
-        self.dropout = dropout
+        self.progress = []
 
         # Generate_loaders
         self.datahandler = data
@@ -95,8 +107,10 @@ class Trainer(FCNN):
         self.val_loader = self.datahandler.generate_dataloader(set='val')
         self.train_val_loader = self.datahandler.generate_dataloader(set='train_val')
 
-    def train(self, n_epochs :int, lr :float=0.001, l1_reg :float=None, l2_reg :float=None, patience :int=None, retrain :bool=False) ->None:
+    def train_network(self, n_epochs :int, lr :float=0.001, l1_reg :float=None, l2_reg :float=None, patience :int=None, retrain :bool=False) ->None:
         self._verify_inputs(l1_reg=l1_reg, l2_reg=l2_reg, patience=patience)
+
+        self.train()
 
         # Define loss and optimizer
         criterion = torch.nn.MSELoss(reduction='mean')
@@ -109,7 +123,7 @@ class Trainer(FCNN):
             optimal_iterations = i
 
             while j < patience:
-                self._training_loop(n_epochs=n_epochs, l1_reg=l1_reg, l2_reg=l2_reg, loader=self.train_loader, criterion=criterion, optimizer=optimizer)
+                self._training_loop(n_epochs=n_epochs, l1_reg=l1_reg, l2_reg=l2_reg, loader=self.train_loader, criterion=criterion, optimizer=optimizer, validate=True)
             
                 i += n_epochs
 
@@ -127,6 +141,8 @@ class Trainer(FCNN):
             if retrain:
                 self._randomize_weights()
 
+                print(f"training for {optimal_iterations} iterations")
+
                 self._training_loop(n_epochs=optimal_iterations, l1_reg=l1_reg, l2_reg=l2_reg, loader=self.train_val_loader, criterion=criterion, optimizer=optimizer)
 
             else:
@@ -134,7 +150,6 @@ class Trainer(FCNN):
               
         else:
             self._training_loop(n_epochs=n_epochs, l1_reg=l1_reg, l2_reg=l2_reg, loader=self.train_loader, criterion=criterion, optimizer=optimizer, validate=True)
-
 
     def _verify_inputs(self, l1_reg :float, l2_reg :float, patience :int) -> None:
         if self.l1 and (l1_reg is None):
@@ -146,20 +161,21 @@ class Trainer(FCNN):
         if self.early_stopping and (patience is None):
             raise TypeError(f"Cannot perform early stopping with patience {patience}")
         
-        if self.dropout:
-            raise NotImplementedError("Dropout not implemented")
-
+        # if self.enable_dropout and (dropout is None):
+        #     raise TypeError(f"Cannot perform early stopping with dropout {dropout}")
 
     def _calculate_mse(self, loader :DataLoader):
         mse_val = 0
+        self.eval()
 
         for inputs, labels in loader:
             mse_val += torch.sum(torch.pow(labels - self(inputs), 2)).item()
 
         mse_val /= len(loader.dataset)
 
-        return mse_val
+        self.train()
 
+        return mse_val
 
     def _training_loop(self, n_epochs :int, l1_reg :float, l2_reg :float, loader :DataLoader, criterion, optimizer, validate :bool=False):
         for epoch in range(n_epochs):
@@ -201,20 +217,33 @@ class Trainer(FCNN):
                 mse_val = self._calculate_mse(self.val_loader)    
                 print(f'Epoch: {epoch + 1}: Val MSE: {mse_val}')
 
+                self.progress.append(mse_val)
+            
+            # else:
+            #     print()
 
-    def evaluate(self, mode :str='test') -> tuple:
-        x, y = self.datahandler.generate_tensor(set=mode)
+    def evaluate(self, input :torch.Tensor, value :torch.Tensor) -> tuple:
+        # x, y = self.datahandler.generate_tensor(set=mode)
 
-        pred = self(x)
+        self.eval()
 
-        mse_test = torch.mean(torch.pow(pred - y, 2))
+        pred = self(input)
 
-        mae_test = torch.mean(torch.abs(pred - y))
+        mse = torch.mean(torch.pow(pred - value, 2))
 
-        mape_test = 100*torch.mean(torch.abs(torch.div(pred - y, y)))
+        mae = torch.mean(torch.abs(pred - value))
 
-        return mse_test.item(), mae_test.item(), mape_test.item()
+        mape = 100*torch.mean(torch.abs(torch.div(pred - value, value)))
 
+        return mse.item(), mae.item(), mape.item()
+
+    def predict(self, input :torch.Tensor) -> torch.Tensor:
+        self.eval()
+
+        return self(input).detach().numpy()
+
+    def get_progress(self):
+        return self.progress
 
 def train(
         net: torch.nn.Module,

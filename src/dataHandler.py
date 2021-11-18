@@ -3,12 +3,25 @@ import torch
 from torch.utils.data import DataLoader
 
 class DataHandler(object):
-	def __init__(self, file_name :str, index_col :int, seed: int, input_cols :list = None, output_cols :list = None):
+	def __init__(
+			self,
+			file_name :str,
+			index_col :int,
+			seed: int,
+			input_cols :list = None,
+			output_cols :list = None,
+			test_indices :tuple=None,
+			validation_frac :float=None,
+	):
+
 		self.random_seed = seed
 		self.df = pd.read_csv(file_name, index_col=index_col)
 
 		self.input_cols = input_cols
 		self.output_cols = output_cols
+
+		if (test_indices is not None) and (validation_frac is not None):
+			self.generate_data_sets(test_indices=test_indices, validation_frac=validation_frac)
 
 	def get_dataframe(self):
 		return self.df
@@ -60,7 +73,7 @@ class DataHandler(object):
 	def get_output_cols(self):
 		return self.output_cols
 
-	def generate_dataloader(self, set :str = 'train') -> tuple:
+	def generate_dataloader(self, set :str) -> tuple:
 		if set == 'val':
 			x, y = self.generate_tensor('val')
 			shuffle = False
@@ -69,15 +82,19 @@ class DataHandler(object):
 			x, y = self.generate_tensor('train')
 			shuffle = True
 
+		elif set == 'train_val':
+			x, y = self.generate_tensor('train_val')
+			shuffle = True
+
 		else:
-			raise ValueError('{error} undefined'.format(error=set))
+			raise ValueError(f'{set} undefined')
 
 		dataset = torch.utils.data.TensorDataset(x, y)
 		loader = torch.utils.data.DataLoader(dataset, batch_size=10, shuffle=shuffle)
 
 		return loader
 
-	def generate_tensor(self, set :str = 'train') -> tuple:
+	def generate_tensor(self, set :str) -> tuple:
 		if set == 'test':
 			input_tensor = torch.from_numpy(self.test_set[self.input_cols].values).to(torch.float)
 			output_tensor = torch.from_numpy(self.test_set[self.output_cols].values).to(torch.float)
@@ -90,8 +107,12 @@ class DataHandler(object):
 			input_tensor = torch.from_numpy(self.train_set[self.input_cols].values).to(torch.float)
 			output_tensor = torch.from_numpy(self.train_set[self.output_cols].values).to(torch.float)
 
+		elif set == 'train_val':
+			input_tensor = torch.from_numpy(self.train_val_set[self.input_cols].values).to(torch.float)
+			output_tensor = torch.from_numpy(self.train_val_set[self.output_cols].values).to(torch.float)
+
 		else:
-			raise ValueError('{error} undefined'.format(error=set))
+			raise ValueError('{set} undefined')
 
 		return input_tensor, output_tensor
 
